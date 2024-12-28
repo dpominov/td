@@ -24,6 +24,8 @@ type channelState struct {
 	// Channel to pass diff.OtherUpdates into *internalState.
 	out chan<- tracedUpdate
 
+	manualGetDiff chan struct{}
+
 	// Channel internalState.
 	pts         *sequenceBox
 	idleTimeout *time.Timer
@@ -121,6 +123,11 @@ func (s *channelState) Run(ctx context.Context) error {
 			s.log.Debug("Idle timeout")
 			s.resetIdleTimer()
 			s.getDifferenceLogger(ctx)
+		case <-s.manualGetDiff:
+			s.getDifferenceLogger(ctx)
+			if now := time.Now(); now.After(s.diffTimeout) {
+				s.diffTimeout = time.Now().Add(time.Second)
+			}
 		}
 	}
 }
