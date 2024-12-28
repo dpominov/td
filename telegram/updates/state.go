@@ -309,51 +309,60 @@ func (s *internalState) handleChannel(ctx context.Context, channelID int64, date
 
 	state, ok := s.channels[channelID]
 	if !ok {
-		accessHash, found, err := s.hasher.GetChannelAccessHash(context.Background(), s.selfID, channelID)
-		if err != nil {
-			s.log.Error("GetChannelAccessHash error", zap.Error(err))
+		state = s.addNewChannelState(ctx, channelID, date, pts, ptsCount)
+		if state == nil {
+			s.log.Debug("Failed to recover missing access hash, update ignored",
+				zap.Int64("channel_id", channelID),
+				zap.Any("update", cu.update),
+			)
+			return nil
 		}
-
-		if !found {
-			if date == 0 {
-				// Received update has no date field.
-				date = s.date - 30
-			} else {
-				date-- // 1 sec back
-			}
-
-			// Try to get access hash from updates.getDifference.
-			accessHash, found = s.restoreAccessHash(ctx, channelID, date)
-			if !found {
-				s.log.Debug("Failed to recover missing access hash, update ignored",
-					zap.Int64("channel_id", channelID),
-					zap.Any("update", cu.update),
-				)
-				return nil
-			}
-		}
-
-		localPts, found, err := s.storage.GetChannelPts(ctx, s.selfID, channelID)
-		if err != nil {
-			localPts = pts - ptsCount
-			s.log.Error("GetChannelPts error", zap.Error(err))
-		}
-
-		if !found {
-			localPts = pts - ptsCount
-			if err := s.storage.SetChannelPts(ctx, s.selfID, channelID, localPts); err != nil {
-				s.log.Error("SetChannelPts error", zap.Error(err))
-			}
-		}
-
-		state = s.newChannelState(channelID, accessHash, localPts)
-		s.channels[channelID] = state
-		s.wg.Go(func() error {
-			return state.Run(ctx)
-		})
 	}
 
 	return state.Push(ctx, cu)
+}
+
+func (s *internalState) addNewChannelState(ctx context.Context, channelID int64, date, pts, ptsCount int) *channelState {
+	accessHash, found, err := s.hasher.GetChannelAccessHash(context.Background(), s.selfID, channelID)
+	if err != nil {
+		s.log.Error("GetChannelAccessHash error", zap.Error(err))
+	}
+
+	if !found {
+		if date == 0 {
+			// Received update has no date field.
+			date = s.date - 30
+		} else {
+			date-- // 1 sec back
+		}
+
+		// Try to get access hash from updates.getDifference.
+		accessHash, found = s.restoreAccessHash(ctx, channelID, date)
+		if !found {
+			return nil
+		}
+	}
+
+	localPts, found, err := s.storage.GetChannelPts(ctx, s.selfID, channelID)
+	if err != nil {
+		localPts = pts - ptsCount
+		s.log.Error("GetChannelPts error", zap.Error(err))
+	}
+
+	if !found {
+		localPts = pts - ptsCount
+		if err := s.storage.SetChannelPts(ctx, s.selfID, channelID, localPts); err != nil {
+			s.log.Error("SetChannelPts error", zap.Error(err))
+		}
+	}
+
+	state := s.newChannelState(channelID, accessHash, localPts)
+	s.channels[channelID] = state
+	s.wg.Go(func() error {
+		return state.Run(ctx)
+	})
+
+	return state
 }
 
 func (s *internalState) newChannelState(channelID, accessHash int64, initialPts int) *channelState {
