@@ -13,6 +13,8 @@ import (
 	"github.com/gotd/td/tg"
 )
 
+const maxNumShortpolledChannels = 10
+
 var _ telegram.UpdateHandler = (*Manager)(nil)
 
 // Manager deals with gaps.
@@ -29,6 +31,9 @@ type Manager struct {
 	state *internalState
 	mux   sync.Mutex
 
+	openChannels   map[int64]context.CancelFunc
+	openChannelsMu sync.Mutex
+
 	// immutable:
 
 	cfg    Config
@@ -40,9 +45,10 @@ type Manager struct {
 func New(cfg Config) *Manager {
 	cfg.setDefaults()
 	return &Manager{
-		cfg:    cfg,
-		lg:     cfg.Logger,
-		tracer: cfg.TracerProvider.Tracer(""),
+		cfg:          cfg,
+		lg:           cfg.Logger,
+		tracer:       cfg.TracerProvider.Tracer(""),
+		openChannels: make(map[int64]context.CancelFunc, maxNumShortpolledChannels),
 	}
 }
 
@@ -196,4 +202,61 @@ func (m *Manager) Reset() {
 	m.mux.Lock()
 	defer m.mux.Unlock()
 	m.state = nil
+}
+
+// OpenChannel invoke updates.getChannelDifference periodically for channel the user is currently viewing.
+// See https://core.telegram.org/api/updates#subscribing-to-updates-of-channels-supergroups for reference.
+func (m *Manager) OpenChannel(ctx context.Context, channelID int64) error {
+	if channelID == 0 {
+		return errors.Errorf("empty channelID")
+	}
+
+	if len(m.openChannels) >= maxNumShortpolledChannels {
+		return errors.Errorf("too many open channels")
+	}
+
+	m.openChannelsMu.Lock()
+	defer m.openChannelsMu.Unlock()
+
+	if _, ok := m.openChannels[channelID]; ok {
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	m.openChannels[channelID] = cancel
+
+	state, ok := m.state.channels[channelID]
+	if !ok {
+		// TODO date, pts, ptsCount for channels or supergroups we're not a member
+		state = m.state.addNewChannelState(ctx, channelID, 0, 0, 0)
+		if state == nil {
+			return errors.Errorf("can't add new channel state")
+		}
+	}
+
+	go func(ctx context.Context) {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case state.manualGetDiff <- struct{}{}:
+			}
+		}
+	}(ctx)
+
+	return nil
+}
+
+// CloseChannel stop periodically invoke updates.getChannelDifference for closed channel
+func (m *Manager) CloseChannel(channelID int64) {
+	m.openChannelsMu.Lock()
+	defer m.openChannelsMu.Unlock()
+
+	cancel, ok := m.openChannels[channelID]
+	if !ok {
+		return
+	}
+
+	cancel()
+	delete(m.openChannels, channelID)
 }
