@@ -133,6 +133,7 @@ func (m *Iterator) apply(r tg.MessagesDialogsClass) error {
 	var last tg.NotEmptyMessage
 	for _, dlg := range dialogs {
 		var key DialogKey
+		last = nil
 		if err := key.FromPeer(dlg.GetPeer()); err == nil {
 			last = msgMap[key]
 		}
