@@ -152,8 +152,8 @@ func (m *Iterator) apply(r tg.MessagesDialogsClass) error {
 	}
 
 	if !m.lastBatch && len(m.buf) > 0 {
+		m.offsetID = dialogs[len(m.buf)-1].GetTopMessage()
 		if last != nil {
-			m.offsetID = last.GetID()
 			m.offsetDate = last.GetDate()
 		}
 
